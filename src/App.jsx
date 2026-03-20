@@ -281,9 +281,30 @@ function makeVideoSrc(v) {
   return `https://www.youtube.com/embed/${v.id}?autoplay=1&mute=1&start=${v.start}&rel=0&modestbranding=1&controls=0&disablekb=1&fs=0`;
 }
 
-function getRoomKey(c) { return `imp8_room_${c}`; }
-function getRoom(c)    { try { return JSON.parse(localStorage.getItem(getRoomKey(c))); } catch { return null; } }
-function saveRoom(r)   { localStorage.setItem(getRoomKey(r.code), JSON.stringify(r)); }
+const SUPABASE_URL = "https://lvyxbefvvhdaissgrflw.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx2eXhiZWZ2dmhkYWlzc2dyZmx3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM5NjAwNzMsImV4cCI6MjA4OTUzNjA3M30.yI0k7cqUNfOyA07isu1tJTVL2ECdTNf6_DfRz3NXbiI";
+const SB = (path, opts={}) => fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+  headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json", Prefer: "return=representation" },
+  ...opts
+});
+
+async function getRoom(code) {
+  try {
+    const res = await SB(`rooms?code=eq.${code}&select=data`);
+    const rows = await res.json();
+    return rows?.[0]?.data || null;
+  } catch { return null; }
+}
+
+async function saveRoom(r) {
+  try {
+    await SB(`rooms`, {
+      method: "POST",
+      body: JSON.stringify({ code: r.code, data: r, updated_at: new Date().toISOString() }),
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=representation" }
+    });
+  } catch(e) { console.error("saveRoom error", e); }
+}
 function genCode()     { return Math.random().toString(36).substring(2,6).toUpperCase(); }
 function genId()       { return Date.now().toString(36)+Math.random().toString(36).substring(2,5); }
 
@@ -354,17 +375,16 @@ export default function App() {
   const [picHidden, setPicHidden]         = useState(false);
   const pollRef = useRef(null);
 
-  // Poll
+  // Poll Supabase every 1.5s for room changes
   useEffect(() => {
     if (!room) return;
-    pollRef.current = setInterval(() => {
-      const fresh = getRoom(room.code);
+    pollRef.current = setInterval(async () => {
+      const fresh = await getRoom(room.code);
       if (!fresh) return;
       if (JSON.stringify(fresh) !== JSON.stringify(room)) {
         setRoom(fresh);
         if (fresh.phase !== room.phase) {
           if (fresh.phase === "ended") {
-            // Host left — send everyone home
             setRoom(null); setIsHost(false); setScreen("home");
             return;
           }
@@ -375,7 +395,6 @@ export default function App() {
             setVideoTimer(fresh.videoTimerSetting||25);
             setVideoActive(true);
             setMyClue(""); setMyVote(""); setReplayKey(0); setPicHidden(false);
-            // Set content for this player
             const pair = fresh.pairs?.[fresh.currentPairIndex];
             if (pair) {
               if (fresh.mode === "video") {
@@ -401,7 +420,7 @@ export default function App() {
           }
         }
       }
-    }, 700);
+    }, 1500);
     return () => clearInterval(pollRef.current);
   }, [room, playerId]);
 
@@ -414,16 +433,17 @@ export default function App() {
   useEffect(() => {
     if (!discussActive || discussTimer <= 0) {
       setDiscussActive(false);
-      // Auto-advance to vote when discuss timer ends
       if (discussTimer <= 0 && screen === "discuss") {
-        const r = getRoom(room?.code);
-        if (r && r.phase === "discuss") {
-          r.phase = "vote"; saveRoom(r); setRoom(r); setScreen("vote");
-          if (r.voteTimerEnabled) {
-            setVoteTimer(r.voteTimerSetting || 30);
-            setVoteActive(true);
+        (async () => {
+          const r = await getRoom(room?.code);
+          if (r && r.phase === "discuss") {
+            r.phase = "vote"; await await saveRoom(r); setRoom(r); setScreen("vote");
+            if (r.voteTimerEnabled) {
+              setVoteTimer(r.voteTimerSetting || 30);
+              setVoteActive(true);
+            }
           }
-        }
+        })();
       }
       return;
     }
@@ -505,6 +525,7 @@ export default function App() {
 
   async function handleCreate() {
     if (!playerName.trim()) { setError("Enter your name!"); return; }
+    if (playerName.trim().length > 12) { setError("Name must be 12 characters or less!"); return; }
     if (selectedCats.length<1 && customPairs.length<1) { setError("Pick at least one category or add custom pairs!"); return; }
     setLoading(true); setError("");
     const pairs = await buildPairs(gameMode, roundsSetting);
@@ -520,25 +541,26 @@ export default function App() {
       videoTimerSetting, discussTimerSetting,
       pictureTimer,
     };
-    saveRoom(r);
+    await saveRoom(r);
     setRoom(r); setIsHost(true); setRoomCode(code); setLoading(false); setScreen("lobby");
   }
 
-  function handleJoin() {
+  async function handleJoin() {
     if (!playerName.trim()) { setError("Enter your name!"); return; }
+    if (playerName.trim().length > 12) { setError("Name must be 12 characters or less!"); return; }
     if (!roomCode.trim())   { setError("Enter a room code!"); return; }
-    const r = getRoom(roomCode.toUpperCase());
+    const r = await getRoom(roomCode.toUpperCase());
     if (!r)                  { setError("Room not found!"); return; }
     if (r.phase!=="lobby")   { setError("Game already started!"); return; }
     if (!r.players.find(p=>p.id===playerId)) {
       r.players.push({name:playerName.trim(),id:playerId,isHost:false});
-      saveRoom(r);
+      await saveRoom(r);
     }
     setRoom(r); setIsHost(false); setScreen("lobby"); setError("");
   }
 
-  function handleStart() {
-    const r = getRoom(room.code);
+  async function handleStart() {
+    const r = await getRoom(room.code);
     if (r.players.length<2) { setError("Need at least 2 players!"); return; }
     const count = Math.min(r.impostorCount||1, Math.floor(r.players.length/2));
     const shuffled = [...r.players].sort(()=>Math.random()-0.5);
@@ -548,7 +570,7 @@ export default function App() {
     r.impostors = impostors;
     r.turnOrder = turnOrder;
     r.phase = "watch"; r.clues={}; r.votes={};
-    saveRoom(r);
+    await saveRoom(r);
 
     const isImp = impostors.includes(playerId);
     setAmImpostor(isImp);
@@ -569,45 +591,45 @@ export default function App() {
     setScreen("watch"); setError("");
   }
 
-  function handleSubmitClue() {
+  async function handleSubmitClue() {
     if (!myClue.trim())       { setError("Enter a word!"); return; }
     if (myClue.includes(" ")) { setError("One word only!"); return; }
-    const r = getRoom(room.code);
+    const r = await getRoom(room.code);
     r.clues[playerId] = {word:myClue.trim().toUpperCase(),name:playerName};
     if (Object.keys(r.clues).length>=r.players.length) r.phase="discuss";
-    saveRoom(r); setRoom(r);
+    await saveRoom(r); setRoom(r);
     if (r.phase==="discuss") {
       setDiscussTimer(r.discussTimerSetting||60); setDiscussActive(true); setScreen("discuss");
     }
     setError("");
   }
 
-  function handleGoToVote() {
-    const r = getRoom(room.code);
+  async function handleGoToVote() {
+    const r = await getRoom(room.code);
     r.phase = "vote";
-    saveRoom(r); setRoom(r); setScreen("vote");
+    await saveRoom(r); setRoom(r); setScreen("vote");
   }
 
-  function handleVote(targetId) {
+  async function handleVote(targetId) {
     if (room?.votes?.[playerId]) return;
     setMyVote(prev=>prev===targetId?"":targetId);
     setError("");
   }
 
-  function handleConfirmVote() {
+  async function handleConfirmVote() {
     if (!myVote) { setError("Select a player first!"); return; }
-    const r = getRoom(room.code);
+    const r = await getRoom(room.code);
     r.votes[playerId] = myVote;
     if (Object.keys(r.votes).length>=r.players.length) r.phase="result";
-    saveRoom(r); setRoom(r);
+    await saveRoom(r); setRoom(r);
     if (r.phase==="result") setScreen("result");
     setError("");
   }
 
-  function handleLeaveGame() {
+  async function handleLeaveGame() {
     if (isHost && room) {
-      const r = getRoom(room.code);
-      if (r) { r.phase = "ended"; saveRoom(r); }
+      const r = await getRoom(room.code);
+      if (r) { r.phase = "ended"; await saveRoom(r); }
     }
     setScreen("home"); setRoom(null); setIsHost(false);
   }
@@ -619,12 +641,12 @@ export default function App() {
 
   async function handleNextRound() {
     if (!isHost) return;
-    const r = getRoom(room.code);
+    const r = await getRoom(room.code);
     const next = r.currentPairIndex+1;
     if (next>=r.pairs.length) { setScreen("setup"); return; }
     r.phase="lobby"; r.clues={}; r.votes={}; r.impostors=[];
     r.currentPairIndex=next; r.round=(r.round||1)+1;
-    saveRoom(r); setRoom(r); setMyClue(""); setMyVote(""); setScreen("lobby");
+    await saveRoom(r); setRoom(r); setMyClue(""); setMyVote(""); setScreen("lobby");
   }
 
   async function handleApplySetup() {
@@ -632,7 +654,7 @@ export default function App() {
     setLoading(true); setError("");
     const pairs = await buildPairs(gameMode, roundsSetting);
     if (pairs.length<1) { setError("Couldn't build pairs — add more categories!"); setLoading(false); return; }
-    const r = getRoom(room.code);
+    const r = await getRoom(room.code);
     r.mode=gameMode; r.pairs=pairs; r.currentPairIndex=0; r.round=1;
     r.phase="lobby"; r.clues={}; r.votes={}; r.impostors=[];
     r.totalRounds=pairs.length;
@@ -640,7 +662,7 @@ export default function App() {
     r.voteTimerEnabled=voteTimerEnabled; r.voteTimerSetting=voteTimerSetting;
     r.videoTimerSetting=videoTimerSetting; r.discussTimerSetting=discussTimerSetting;
     r.pictureTimer=pictureTimer;
-    saveRoom(r); setRoom(r); setMyClue(""); setMyVote("");
+    await saveRoom(r); setRoom(r); setMyClue(""); setMyVote("");
     setLoading(false); setScreen("lobby");
   }
 
@@ -952,7 +974,7 @@ export default function App() {
             <div className="card-title">New Game</div>
             <div className="field">
               <label className="label">Your Name</label>
-              <input className="input" placeholder="Enter your name..." value={playerName} onChange={e=>setPlayerName(e.target.value)}/>
+              <input className="input" placeholder="Enter your name..." value={playerName} onChange={e=>setPlayerName(e.target.value.slice(0,12))} maxLength={12}/>
             </div>
             <SettingsForm/>
             {error && <div className="alert alert-warning">{error}</div>}
@@ -965,7 +987,7 @@ export default function App() {
             <div className="card-title">Join Game</div>
             <div className="field">
               <label className="label">Your Name</label>
-              <input className="input" placeholder="Enter your name..." value={playerName} onChange={e=>setPlayerName(e.target.value)}/>
+              <input className="input" placeholder="Enter your name..." value={playerName} onChange={e=>setPlayerName(e.target.value.slice(0,12))} maxLength={12}/>
             </div>
             <div className="field">
               <label className="label">Room Code</label>
@@ -1196,8 +1218,8 @@ export default function App() {
           <TimerRing seconds={discussTimer} total={room?.discussTimerSetting||60}/>
           <div className="alert alert-info" style={{marginBottom:16}}>Look at everyone's clues — who gave a suspicious word? Talk it out before voting!</div>
           {(discussTimer<=0||isHost) && (
-            <button className="btn btn-primary" onClick={()=>{
-              const r=getRoom(room.code); r.phase="vote"; saveRoom(r); setRoom(r); setScreen("vote");
+            <button className="btn btn-primary" onClick={async()=>{
+              const r = await getRoom(room.code); r.phase="vote"; await saveRoom(r); setRoom(r); setScreen("vote");
             }}>{isHost?"End Discussion → Vote":"Go to Vote →"}</button>
           )}
           {!isHost && discussTimer>0 && <div className="alert alert-warning" style={{marginBottom:0}}>Waiting for host to move to voting...</div>}
