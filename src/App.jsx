@@ -278,7 +278,7 @@ async function fetchPexelsImage(query) {
 
 function makeVideoSrc(v) {
   if (!v) return null;
-  return `https://www.youtube.com/embed/${v.id}?autoplay=1&mute=1&start=${v.start}&rel=0&modestbranding=1&controls=0&disablekb=1&fs=0&origin=https://impostor-game-self-seven.vercel.app`;
+  return `https://www.youtube.com/embed/${v.id}?autoplay=1&mute=1&start=${v.start}&rel=0&modestbranding=1&controls=1&fs=0&enablejsapi=1&origin=https://impostor-game-self-seven.vercel.app`;
 }
 
 const SUPABASE_URL = "https://lvyxbefvvhdaissgrflw.supabase.co";
@@ -342,6 +342,36 @@ function TimerRing({ seconds, total, size=96 }) {
         <span className={`timer-num${urgent?" urgent":""}`}>{seconds}</span>
       </div>
       <span className="timer-label">{seconds>0?"seconds remaining":"time's up!"}</span>
+    </div>
+  );
+}
+
+// ── ChatBox — defined outside App so it never loses focus ──
+function ChatBox({ messages, playerId, chatMsg, setChatMsg, onSend, chatEndRef }) {
+  return (
+    <div style={{marginTop:16}}>
+      <div style={{height:200,overflowY:"auto",background:"var(--surface2)",border:"1px solid var(--border)",borderRadius:"12px 12px 0 0",padding:12,display:"flex",flexDirection:"column",gap:8}}>
+        {messages.length===0 && <div style={{color:"var(--muted)",fontSize:12,textAlign:"center",marginTop:8}}>No messages yet — say something!</div>}
+        {messages.map((m,i)=>(
+          <div key={i} style={{display:"flex",flexDirection:"column",alignItems:m.player_id===playerId?"flex-end":"flex-start",gap:2}}>
+            <span style={{fontSize:10,color:"var(--muted)",letterSpacing:1,textTransform:"uppercase"}}>{m.player_id===playerId?"you":m.name}</span>
+            <span style={{fontSize:13,padding:"7px 12px",borderRadius:10,background:m.player_id===playerId?"rgba(0,229,255,0.12)":"var(--surface)",color:"var(--text)",maxWidth:"85%",lineHeight:1.5,wordBreak:"break-word"}}>{m.text}</span>
+          </div>
+        ))}
+        <div ref={chatEndRef}/>
+      </div>
+      <div style={{display:"flex",gap:8,padding:8,background:"var(--surface2)",border:"1px solid var(--border)",borderTop:"none",borderRadius:"0 0 12px 12px"}}>
+        <input
+          style={{flex:1,background:"var(--surface)",border:"1px solid var(--border)",borderRadius:8,padding:"9px 12px",color:"var(--text)",fontFamily:"'DM Sans',sans-serif",fontSize:13,outline:"none"}}
+          placeholder="Type a message..."
+          value={chatMsg}
+          onChange={e=>setChatMsg(e.target.value)}
+          onKeyDown={e=>e.key==="Enter"&&onSend()}
+          maxLength={200}/>
+        <button
+          style={{background:"var(--accent2)",color:"#000",border:"none",borderRadius:8,padding:"9px 16px",fontFamily:"'DM Sans',sans-serif",fontWeight:700,fontSize:13,cursor:"pointer"}}
+          onClick={onSend}>Send</button>
+      </div>
     </div>
   );
 }
@@ -941,33 +971,6 @@ export default function App() {
   }
 
   // ── Chat Box ──
-  function ChatBox() {
-    return (
-      <div style={{marginTop:16}}>
-        <div style={{height:200,overflowY:"auto",background:"var(--surface2)",border:"1px solid var(--border)",borderRadius:"12px 12px 0 0",padding:12,display:"flex",flexDirection:"column",gap:8}}>
-          {messages.length===0 && <div style={{color:"var(--muted)",fontSize:12,textAlign:"center",marginTop:8}}>No messages yet — say something!</div>}
-          {messages.map((m,i)=>(
-            <div key={i} style={{display:"flex",flexDirection:"column",alignItems:m.player_id===playerId?"flex-end":"flex-start",gap:2}}>
-              <span style={{fontSize:10,color:"var(--muted)",letterSpacing:1,textTransform:"uppercase"}}>{m.player_id===playerId?"you":m.name}</span>
-              <span style={{fontSize:13,padding:"7px 12px",borderRadius:10,background:m.player_id===playerId?"rgba(0,229,255,0.12)":"var(--surface)",color:"var(--text)",maxWidth:"85%",lineHeight:1.5}}>{m.text}</span>
-            </div>
-          ))}
-          <div ref={chatEndRef}/>
-        </div>
-        <div style={{display:"flex",gap:8,padding:8,background:"var(--surface2)",border:"1px solid var(--border)",borderTop:"none",borderRadius:"0 0 12px 12px"}}>
-          <input style={{flex:1,background:"var(--surface)",border:"1px solid var(--border)",borderRadius:8,padding:"9px 12px",color:"var(--text)",fontFamily:"'DM Sans',sans-serif",fontSize:13,outline:"none"}}
-            placeholder="Type a message..."
-            value={chatMsg}
-            onChange={e=>setChatMsg(e.target.value)}
-            onKeyDown={e=>e.key==="Enter"&&handleSendChat()}
-            maxLength={200}/>
-          <button style={{background:"var(--accent2)",color:"#000",border:"none",borderRadius:8,padding:"9px 16px",fontFamily:"'DM Sans',sans-serif",fontWeight:700,fontSize:13,cursor:"pointer"}}
-            onClick={handleSendChat}>Send</button>
-        </div>
-      </div>
-    );
-  }
-
   // ── Content display for watch screen ──
   function ContentDisplay() {
     if (!myContent) return <div style={{textAlign:"center",padding:32,color:"var(--muted)"}}>Loading...</div>;
@@ -1152,7 +1155,7 @@ export default function App() {
         {!room?.verbalMode && (
           <div className="card">
             <div className="card-title">Lobby Chat</div>
-            <ChatBox/>
+            <ChatBox messages={messages} playerId={playerId} chatMsg={chatMsg} setChatMsg={setChatMsg} onSend={handleSendChat} chatEndRef={chatEndRef}/>
           </div>
         )}
       </div>
@@ -1325,7 +1328,7 @@ export default function App() {
         {!room?.verbalMode && (
           <div className="card">
             <div className="card-title">Discussion Chat</div>
-            <ChatBox/>
+            <ChatBox messages={messages} playerId={playerId} chatMsg={chatMsg} setChatMsg={setChatMsg} onSend={handleSendChat} chatEndRef={chatEndRef}/>
           </div>
         )}
       </div>
@@ -1515,7 +1518,7 @@ export default function App() {
         {!room?.verbalMode && (
           <div className="card">
             <div className="card-title">Post-Game Chat</div>
-            <ChatBox/>
+            <ChatBox messages={messages} playerId={playerId} chatMsg={chatMsg} setChatMsg={setChatMsg} onSend={handleSendChat} chatEndRef={chatEndRef}/>
           </div>
         )}
         <button className="btn btn-ghost" style={{marginTop:8,width:"100%",textAlign:"center"}} onClick={handleLeaveGame}>← Leave Game</button>
