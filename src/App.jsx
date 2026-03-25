@@ -278,7 +278,7 @@ async function fetchPexelsImage(query) {
 
 function makeVideoSrc(v) {
   if (!v) return null;
-  return `https://www.youtube.com/embed/${v.id}?autoplay=1&mute=1&start=${v.start}&rel=0&modestbranding=1&controls=0&disablekb=1&fs=0`;
+  return `https://www.youtube.com/embed/${v.id}?autoplay=1&mute=1&start=${v.start}&rel=0&modestbranding=1&controls=0&disablekb=1&fs=0&origin=https://impostor-game-self-seven.vercel.app`;
 }
 
 const SUPABASE_URL = "https://lvyxbefvvhdaissgrflw.supabase.co";
@@ -307,6 +307,24 @@ async function saveRoom(r) {
 }
 function genCode()     { return Math.random().toString(36).substring(2,6).toUpperCase(); }
 function genId()       { return Date.now().toString(36)+Math.random().toString(36).substring(2,5); }
+
+async function getMessages(code) {
+  try {
+    const res = await SB(`messages?room_code=eq.${encodeURIComponent(code)}&order=created_at.asc&limit=100`);
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
+  } catch { return []; }
+}
+
+async function sendMessage(code, playerId, name, text) {
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/messages`, {
+      method: "POST",
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+      body: JSON.stringify({ room_code: code, player_id: playerId, name, text })
+    });
+  } catch(e) { console.error(e); }
+}
 
 function TimerRing({ seconds, total, size=96 }) {
   const r=38, circ=2*Math.PI*r, pct=Math.max(0,seconds/total);
@@ -370,18 +388,29 @@ export default function App() {
   const [voteTimer, setVoteTimer]         = useState(60);
   const [voteActive, setVoteActive]       = useState(false);
   const [replayKey, setReplayKey]         = useState(0);
-  const [myContent, setMyContent]         = useState(null); // {type, src/url/word, hint}
+  const [myContent, setMyContent]         = useState(null);
   const [loading, setLoading]             = useState(false);
   const [picHidden, setPicHidden]         = useState(false);
+  const [chatMsg, setChatMsg]             = useState("");
+  const [messages, setMessages]           = useState([]);
+  const chatEndRef                        = useRef(null);
   const pollRef = useRef(null);
 
-  // Poll Supabase every 1.5s for room changes
+  // Poll Supabase every 1.5s for room changes + messages
   useEffect(() => {
     if (!room) return;
     pollRef.current = setInterval(async () => {
       const fresh = await getRoom(room.code);
       if (!fresh) return;
+
+      // Fetch messages if chat enabled
+      if (!fresh.verbalMode) {
+        const msgs = await getMessages(room.code);
+        setMessages(msgs);
+      }
+
       if (JSON.stringify(fresh) !== JSON.stringify(room)) {
+        // Handle player leaving — remove disconnected players after 30s
         setRoom(fresh);
         if (fresh.phase !== room.phase) {
           if (fresh.phase === "ended") {
@@ -424,6 +453,18 @@ export default function App() {
     return () => clearInterval(pollRef.current);
   }, [room, playerId]);
 
+  // Scroll chat to bottom when messages update
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  async function handleSendChat() {
+    if (!chatMsg.trim() || !room) return;
+    const text = chatMsg.trim().slice(0, 200);
+    setChatMsg("");
+    await sendMessage(room.code, playerId, playerName, text);
+  }
+
   useEffect(() => {
     if (!videoActive||videoTimer<=0) { setVideoActive(false); return; }
     const t = setTimeout(()=>setVideoTimer(v=>v-1),1000);
@@ -437,7 +478,7 @@ export default function App() {
         (async () => {
           const r = await getRoom(room?.code);
           if (r && r.phase === "discuss") {
-            r.phase = "vote"; await await saveRoom(r); setRoom(r); setScreen("vote");
+            r.phase = "vote"; await saveRoom(r); setRoom(r); setScreen("vote");
             if (r.voteTimerEnabled) {
               setVoteTimer(r.voteTimerSetting || 30);
               setVoteActive(true);
@@ -452,7 +493,25 @@ export default function App() {
   }, [discussTimer, discussActive]);
 
   useEffect(() => {
-    if (!voteActive || voteTimer <= 0) { setVoteActive(false); return; }
+    if (!voteActive || voteTimer <= 0) {
+      setVoteActive(false);
+      // Auto-advance when vote timer ends — anyone who hasn't voted gets skipped
+      if (voteTimer <= 0 && screen === "vote" && !room?.votes?.[playerId]) {
+        (async () => {
+          const r = await getRoom(room?.code);
+          if (r && r.phase === "vote") {
+            // Mark this player as abstained with a special value
+            r.votes[playerId] = "abstain";
+            // Check if all players have now voted or abstained
+            const allDone = r.players.every(p => r.votes[p.id]);
+            if (allDone) r.phase = "result";
+            await saveRoom(r); setRoom(r);
+            if (r.phase === "result") setScreen("result");
+          }
+        })();
+      }
+      return;
+    }
     const t = setTimeout(() => setVoteTimer(v => v - 1), 1000);
     return () => clearTimeout(t);
   }, [voteTimer, voteActive]);
@@ -563,10 +622,14 @@ export default function App() {
     const r = await getRoom(room.code);
     if (r.players.length<2) { setError("Need at least 2 players!"); return; }
     const count = Math.min(r.impostorCount||1, Math.floor(r.players.length/2));
-    const shuffled = [...r.players].sort(()=>Math.random()-0.5);
-    const impostors = shuffled.slice(0,count).map(p=>p.id);
-    // Random turn order — shuffle all players
-    const turnOrder = [...r.players].sort(()=>Math.random()-0.5).map(p=>p.id);
+    // Fisher-Yates shuffle — true randomness, no bias
+    const arr = [...r.players];
+    for (let i=arr.length-1;i>0;i--) { const j=Math.floor(Math.random()*(i+1)); [arr[i],arr[j]]=[arr[j],arr[i]]; }
+    const impostors = arr.slice(0,count).map(p=>p.id);
+    // Independently shuffle turn order
+    const tArr = [...r.players];
+    for (let i=tArr.length-1;i>0;i--) { const j=Math.floor(Math.random()*(i+1)); [tArr[i],tArr[j]]=[tArr[j],tArr[i]]; }
+    const turnOrder = tArr.map(p=>p.id);
     r.impostors = impostors;
     r.turnOrder = turnOrder;
     r.phase = "watch"; r.clues={}; r.votes={};
@@ -630,6 +693,14 @@ export default function App() {
     if (isHost && room) {
       const r = await getRoom(room.code);
       if (r) { r.phase = "ended"; await saveRoom(r); }
+    } else if (room) {
+      // Non-host leaving — remove from players list
+      const r = await getRoom(room.code);
+      if (r) {
+        r.players = r.players.filter(p => p.id !== playerId);
+        if (r.players.length === 0) { r.phase = "ended"; }
+        await saveRoom(r);
+      }
     }
     setScreen("home"); setRoom(null); setIsHost(false);
   }
@@ -678,7 +749,9 @@ export default function App() {
 
   function getVoteTallies() {
     const t={}; room?.players?.forEach(p=>{t[p.id]=0;});
-    Object.values(room?.votes||{}).forEach(id=>{if(t[id]!==undefined)t[id]++;});
+    Object.values(room?.votes||{}).forEach(id=>{
+      if (id !== "abstain" && t[id]!==undefined) t[id]++;
+    });
     return t;
   }
 
@@ -867,6 +940,34 @@ export default function App() {
     </>;
   }
 
+  // ── Chat Box ──
+  function ChatBox() {
+    return (
+      <div style={{marginTop:16}}>
+        <div style={{height:200,overflowY:"auto",background:"var(--surface2)",border:"1px solid var(--border)",borderRadius:"12px 12px 0 0",padding:12,display:"flex",flexDirection:"column",gap:8}}>
+          {messages.length===0 && <div style={{color:"var(--muted)",fontSize:12,textAlign:"center",marginTop:8}}>No messages yet — say something!</div>}
+          {messages.map((m,i)=>(
+            <div key={i} style={{display:"flex",flexDirection:"column",alignItems:m.player_id===playerId?"flex-end":"flex-start",gap:2}}>
+              <span style={{fontSize:10,color:"var(--muted)",letterSpacing:1,textTransform:"uppercase"}}>{m.player_id===playerId?"you":m.name}</span>
+              <span style={{fontSize:13,padding:"7px 12px",borderRadius:10,background:m.player_id===playerId?"rgba(0,229,255,0.12)":"var(--surface)",color:"var(--text)",maxWidth:"85%",lineHeight:1.5}}>{m.text}</span>
+            </div>
+          ))}
+          <div ref={chatEndRef}/>
+        </div>
+        <div style={{display:"flex",gap:8,padding:8,background:"var(--surface2)",border:"1px solid var(--border)",borderTop:"none",borderRadius:"0 0 12px 12px"}}>
+          <input style={{flex:1,background:"var(--surface)",border:"1px solid var(--border)",borderRadius:8,padding:"9px 12px",color:"var(--text)",fontFamily:"'DM Sans',sans-serif",fontSize:13,outline:"none"}}
+            placeholder="Type a message..."
+            value={chatMsg}
+            onChange={e=>setChatMsg(e.target.value)}
+            onKeyDown={e=>e.key==="Enter"&&handleSendChat()}
+            maxLength={200}/>
+          <button style={{background:"var(--accent2)",color:"#000",border:"none",borderRadius:8,padding:"9px 16px",fontFamily:"'DM Sans',sans-serif",fontWeight:700,fontSize:13,cursor:"pointer"}}
+            onClick={handleSendChat}>Send</button>
+        </div>
+      </div>
+    );
+  }
+
   // ── Content display for watch screen ──
   function ContentDisplay() {
     if (!myContent) return <div style={{textAlign:"center",padding:32,color:"var(--muted)"}}>Loading...</div>;
@@ -883,21 +984,12 @@ export default function App() {
 
     if (myContent.type==="picture") {
       const showPic = pictureTimer==="visible" || !picHidden;
-      const label = amImpostor ? currentPair?.imposterQuery : currentPair?.majorityQuery;
       return (
-        <div>
-          <div className="picture-wrapper">
-            {showPic
-              ? <img src={myContent.url} alt="Round image" onError={e=>{e.target.style.display="none";}}/>
-              : <div className="picture-hidden"><span style={{fontSize:48}}>🙈</span><span>Image hidden — submit your clue!</span></div>
-            }
-          </div>
-          {showPic && label && (
-            <div style={{textAlign:"center",marginTop:8,padding:"8px 16px",background:"var(--surface2)",borderRadius:10,border:"1px solid var(--border)"}}>
-              <span style={{fontSize:11,letterSpacing:2,textTransform:"uppercase",color:"var(--muted)"}}>You see: </span>
-              <span style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:20,letterSpacing:2,color:"var(--accent2)",textTransform:"uppercase"}}>{label}</span>
-            </div>
-          )}
+        <div className="picture-wrapper">
+          {showPic
+            ? <img src={myContent.url} alt="Round image" onError={e=>{e.target.style.display="none";}}/>
+            : <div className="picture-hidden"><span style={{fontSize:48}}>🙈</span><span>Image hidden — submit your clue!</span></div>
+          }
         </div>
       );
     }
@@ -1057,6 +1149,12 @@ export default function App() {
             : <div className="alert alert-info" style={{textAlign:"center",marginBottom:0}}>Waiting for host to start...</div>
           }
         </div>
+        {!room?.verbalMode && (
+          <div className="card">
+            <div className="card-title">Lobby Chat</div>
+            <ChatBox/>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1224,6 +1322,12 @@ export default function App() {
           )}
           {!isHost && discussTimer>0 && <div className="alert alert-warning" style={{marginBottom:0}}>Waiting for host to move to voting...</div>}
         </div>
+        {!room?.verbalMode && (
+          <div className="card">
+            <div className="card-title">Discussion Chat</div>
+            <ChatBox/>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1408,6 +1512,12 @@ export default function App() {
             : <button className="btn btn-primary" onClick={handleNextRound}>▶ Next Round ({(room?.round||1)+1}/{room?.totalRounds})</button>
           : <div className="alert alert-info" style={{textAlign:"center"}}>Waiting for host to continue...</div>
         }
+        {!room?.verbalMode && (
+          <div className="card">
+            <div className="card-title">Post-Game Chat</div>
+            <ChatBox/>
+          </div>
+        )}
         <button className="btn btn-ghost" style={{marginTop:8,width:"100%",textAlign:"center"}} onClick={handleLeaveGame}>← Leave Game</button>
       </div>
     </div>
